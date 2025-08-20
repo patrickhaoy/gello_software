@@ -26,7 +26,7 @@ class URRobot(Robot):
             self.gripper = RobotiqGripper()
             self.gripper.connect(hostname=robot_ip, port=63352)
             print("gripper connected")
-            # gripper.activate()
+            self.gripper.activate()
 
         [print("connect") for _ in range(4)]
 
