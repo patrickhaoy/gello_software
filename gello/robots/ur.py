@@ -3,12 +3,13 @@ from typing import Dict
 import numpy as np
 
 from gello.robots.robot import Robot
+from gello.utils.pd import PD
 
 
 class URRobot(Robot):
     """A class representing a UR robot."""
 
-    def __init__(self, robot_ip: str = "192.168.1.10", no_gripper: bool = False):
+    def __init__(self, robot_ip: str = "192.168.1.10", no_gripper: bool = False, Kp=1.0, Kd=0.0, acceleration=2.0):
         import rtde_control
         import rtde_receive
 
@@ -33,6 +34,16 @@ class URRobot(Robot):
         self._free_drive = False
         self.robot.endFreedriveMode()
         self._use_gripper = not no_gripper
+
+        self.Kp = Kp
+        self.Kd = Kd
+        self.acceleration = acceleration
+        self.pd_controller = PD(
+            num_joints=6,
+            Kp=self.Kp,
+            Kd=self.Kd,
+            sample_time=None
+        )
 
     def num_dofs(self) -> int:
         """Get the number of joints of the robot.
@@ -72,17 +83,26 @@ class URRobot(Robot):
         Args:
             joint_state (np.ndarray): The state to command the leader robot to.
         """
-        velocity = 0.5
-        acceleration = 0.5
+        # velocity = 0.5
+        # acceleration = 0.5
         dt = 1.0 / 500  # 2ms
-        lookahead_time = 0.2
-        gain = 100
+        # lookahead_time = 0.2
+        # gain = 100
 
         robot_joints = joint_state[:6]
         t_start = self.robot.initPeriod()
-        self.robot.servoJ(
-            robot_joints, velocity, acceleration, dt, lookahead_time, gain
+        # self.robot.servoJ(
+        #     robot_joints, velocity, acceleration, dt, lookahead_time, gain
+        # )
+        self.pd_controller.setpoint = robot_joints
+        curr_joints = self.r_inter.getActualQ()
+        speeds = self.pd_controller(curr_joints)
+        self.robot.speedJ(
+            qd=speeds,
+            acceleration=self.acceleration,
+            time=dt
         )
+
         if self._use_gripper:
             gripper_pos = joint_state[-1] * 255
             self.gripper.move(gripper_pos, 255, 10)
