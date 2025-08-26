@@ -48,6 +48,8 @@ class ZMQServerRobot:
                     result = self._robot.command_joint_state(**args)
                 elif method == "get_observations":
                     result = self._robot.get_observations()
+                elif method == "cleanup":
+                    result = self._robot.cleanup() if hasattr(self._robot, 'cleanup') else None
                 else:
                     result = {"error": "Invalid method"}
                     print(result)
@@ -69,9 +71,10 @@ class ZMQClientRobot(Robot):
     """A class representing a ZMQ client for a leader robot."""
 
     def __init__(self, port: int = DEFAULT_ROBOT_PORT, host: str = "127.0.0.1"):
+        self._host = host
+        self._port = port
         self._context = zmq.Context()
-        self._socket = self._context.socket(zmq.REQ)
-        self._socket.connect(f"tcp://{host}:{port}")
+        self._connect()
 
     def num_dofs(self) -> int:
         """Get the number of joints in the robot.
@@ -134,7 +137,39 @@ class ZMQClientRobot(Robot):
         except zmq.Again:
             raise RuntimeError("ZMQ timeout - robot may be disconnected")
 
+    def _connect(self) -> None:
+        """Internal method to establish connection."""
+        self._socket = self._context.socket(zmq.REQ)
+        self._socket.connect(f"tcp://{self._host}:{self._port}")
+
+    def _close_socket(self) -> None:
+        """Close just the socket, keep context alive."""
+        if hasattr(self, '_socket'):
+            self._socket.close()
+
+    def cleanup(self) -> None:
+        """Clean up robot state when shutting down."""
+        try:
+            # Reset connection to ensure clean state
+            self._close_socket()
+            self._connect()
+            
+            # Send cleanup command
+            request = {"method": "cleanup"}
+            send_message = pickle.dumps(request)
+            self._socket.send(send_message)
+            result = pickle.loads(self._socket.recv())
+            
+            return result
+        except Exception as e:
+            print(f"Error during cleanup: {e}")
+            # Ensure we always close even if cleanup fails
+            try:
+                self.close()
+            except:
+                pass
+
     def close(self) -> None:
         """Close the ZMQ socket and context."""
-        self._socket.close()
+        self._close_socket()
         self._context.term()

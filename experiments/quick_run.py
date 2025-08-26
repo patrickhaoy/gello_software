@@ -181,6 +181,8 @@ def main(args: Args):
             print(
                 f"Joint [{j}], leader: {action[j]}, follower: {joints[j]}, diff: {action[j] - joints[j]}"
             )
+        if hasattr(env, 'cleanup'):
+            env.cleanup()
         exit()
 
     while True:

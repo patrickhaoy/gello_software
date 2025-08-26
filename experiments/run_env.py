@@ -127,7 +127,7 @@ def main(args):
                 usb_ports = glob.glob("/dev/serial/by-id/*")
                 print(f"Found {len(usb_ports)} ports")
                 if len(usb_ports) > 0:
-                    gello_port = usb_ports[0]
+                    gello_port = usb_ports[-1]
                     print(f"using port {gello_port}")
                 else:
                     raise ValueError(
@@ -175,7 +175,13 @@ def main(args):
         else:
             raise ValueError("Invalid agent name")
 
-    agent = instantiate_from_dict(agent_cfg)
+    try:
+        agent = instantiate_from_dict(agent_cfg)
+    except Exception as e:
+        print(e)
+        if hasattr(env, 'cleanup'):
+            env.cleanup()
+        raise e
     # going to start position
     print("Going to start position")
     start_pos = agent.act(env.get_obs())
@@ -199,6 +205,8 @@ def main(args):
             print(
                 f"joint[{i}]: \t delta: {delta:4.3f} , leader: \t{joint:4.3f} , follower: \t{current_j:4.3f}"
             )
+        if hasattr(env, 'cleanup'):
+            env.cleanup()
         return
 
     print(f"Start pos: {len(start_pos)}", f"Joints: {len(joints)}")
@@ -220,7 +228,7 @@ def main(args):
     obs = env.get_obs()
     joints = obs["joint_positions"]
     action = agent.act(obs)
-    if (action - joints > 0.5).any():
+    if (action - joints > 1.0).any():
         print("Action is too big")
 
         # print which joints are too big
@@ -229,6 +237,8 @@ def main(args):
             print(
                 f"Joint [{j}], leader: {action[j]}, follower: {joints[j]}, diff: {action[j] - joints[j]}"
             )
+        if hasattr(env, 'cleanup'):
+            env.cleanup()
         exit()
 
     from gello.utils.control_utils import SaveInterface, run_control_loop

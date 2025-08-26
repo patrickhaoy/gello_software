@@ -149,6 +149,8 @@ class SimpleLaunchManager:
                 print(
                     f"joint[{i}]: \t delta: {delta:4.3f} , leader: \t{joint:4.3f} , follower: \t{current_j:4.3f}"
                 )
+            if hasattr(self.env, 'cleanup'):
+                self.env.cleanup()
             return
 
         # Smooth initial movement

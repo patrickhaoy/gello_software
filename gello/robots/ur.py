@@ -1,49 +1,55 @@
 from typing import Dict
 
 import numpy as np
+from scipy.spatial.transform import Rotation as R
 
 from gello.robots.robot import Robot
-from gello.utils.pd import PD
 
 
 class URRobot(Robot):
     """A class representing a UR robot."""
 
-    def __init__(self, robot_ip: str = "192.168.1.10", no_gripper: bool = False, Kp=1.0, Kd=0.0, acceleration=2.0):
+    def __init__(self, robot_ip: str = "192.168.1.10", no_gripper: bool = False):
         import rtde_control
         import rtde_receive
 
-        [print("in ur robot") for _ in range(4)]
         try:
             self.robot = rtde_control.RTDEControlInterface(robot_ip)
+            self.r_inter = rtde_receive.RTDEReceiveInterface(robot_ip)
+            print("robot connected")
         except Exception as e:
-            print(e)
-            print(robot_ip)
+            print(f"Failed to connect to robot at {robot_ip}: {e}")
+            raise
 
-        self.r_inter = rtde_receive.RTDEReceiveInterface(robot_ip)
         if not no_gripper:
             from gello.robots.robotiq_gripper import RobotiqGripper
-
             self.gripper = RobotiqGripper()
             self.gripper.connect(hostname=robot_ip, port=63352)
             print("gripper connected")
-            self.gripper.activate()
-
-        [print("connect") for _ in range(4)]
+            self.gripper.activate(auto_calibrate=False)
 
         self._free_drive = False
         self.robot.endFreedriveMode()
         self._use_gripper = not no_gripper
+        self.tcp_offset = self.robot.getTCPOffset()
 
-        self.Kp = Kp
-        self.Kd = Kd
-        self.acceleration = acceleration
-        self.pd_controller = PD(
-            num_joints=6,
-            Kp=self.Kp,
-            Kd=self.Kd,
-            sample_time=None
-        )
+        # Impedance control parameters
+        self.imp_kp = 10000.0
+        self.imp_kd = 2200.0
+        self.ori_kp = 100.0
+        self.ori_kd = 22.0
+        self.imp_delta = 0.05
+        self.forcemode_damping = 0.02
+        self.dt = 1.0 / 500.0
+        
+        # Force mode configuration
+        self.fm_task_frame = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        self.fm_selection_vector = [1, 1, 1, 1, 1, 1]
+        self.fm_limits = [0.5, 0.5, 0.1, 1., 1., 1.]
+        
+        # Initialize force mode
+        self.robot.forceModeSetDamping(self.forcemode_damping)
+        self.robot.zeroFtSensor()
 
     def num_dofs(self) -> int:
         """Get the number of joints of the robot.
@@ -78,35 +84,19 @@ class URRobot(Robot):
         return pos
 
     def command_joint_state(self, joint_state: np.ndarray) -> None:
-        """Command the leader robot to a given state.
+        """Command joints by mapping to EE impedance target via FK, then forceMode."""
+        
+        target_q = np.array(joint_state[:6], dtype=float)
+        
+        target_pose_xyz_rxryrz = self.robot.getForwardKinematics(target_q, self.tcp_offset)
+        
+        # Convert to quaternion format [x,y,z,qx,qy,qz,qw]
+        target_pose_quat = self._pose_to_quat(target_pose_xyz_rxryrz)
 
-        Args:
-            joint_state (np.ndarray): The state to command the leader robot to.
-        """
-        # velocity = 0.5
-        # acceleration = 0.5
-        dt = 1.0 / 500  # 2ms
-        # lookahead_time = 0.2
-        # gain = 100
-
-        robot_joints = joint_state[:6]
-        t_start = self.robot.initPeriod()
-        # self.robot.servoJ(
-        #     robot_joints, velocity, acceleration, dt, lookahead_time, gain
-        # )
-        self.pd_controller.setpoint = robot_joints
-        curr_joints = self.r_inter.getActualQ()
-        speeds = self.pd_controller(curr_joints)
-        self.robot.speedJ(
-            qd=speeds,
-            acceleration=self.acceleration,
-            time=dt
-        )
-
-        if self._use_gripper:
-            gripper_pos = joint_state[-1] * 255
-            self.gripper.move(gripper_pos, 255, 10)
-        self.robot.waitPeriod(t_start)
+        if self._use_gripper and joint_state.shape[0] >= 7:
+            target_pose_quat = np.concatenate([target_pose_quat, [joint_state[6]]])
+        
+        self.command_ee_pos_quat(target_pose_quat)
 
     def freedrive_enabled(self) -> bool:
         """Check if the robot is in freedrive mode.
@@ -131,7 +121,7 @@ class URRobot(Robot):
 
     def get_observations(self) -> Dict[str, np.ndarray]:
         joints = self.get_joint_state()
-        pos_quat = np.zeros(7)
+        pos_quat = self._pose_to_quat(self.r_inter.getActualTCPPose())
         gripper_pos = np.array([joints[-1]])
         return {
             "joint_positions": joints,
@@ -139,6 +129,74 @@ class URRobot(Robot):
             "ee_pos_quat": pos_quat,
             "gripper_position": gripper_pos,
         }
+
+    # -------------------- Helper methods --------------------
+    def _pose_to_quat(self, pose_xyz_rxryrz: np.ndarray) -> np.ndarray:
+        """Convert pose [x,y,z,rx,ry,rz] to [x,y,z,qx,qy,qz,qw]."""
+        pos = np.array(pose_xyz_rxryrz[:3], dtype=float)
+        rotvec = np.array(pose_xyz_rxryrz[3:], dtype=float)
+        quat = R.from_rotvec(rotvec).as_quat()  # Returns [x,y,z,w]
+        return np.concatenate([pos, quat])
+
+    def command_ee_pos_quat(self, target_pose_quat: np.ndarray) -> None:
+        """Impedance control step in task space via RTDE forceMode.
+
+        Args:
+            target_pose_quat: np.ndarray of shape (7,) -> [x, y, z, qx, qy, qz, qw]
+        """
+        curr_pose = self.r_inter.getActualTCPPose()
+        curr_quat_pose = self._pose_to_quat(curr_pose)
+        curr_vel = np.array(self.r_inter.getActualTCPSpeed(), dtype=float)
+        
+        # Position impedance
+        diff_p = target_pose_quat[:3] - curr_quat_pose[:3]
+        
+        diff_p = np.clip(diff_p, a_min=-self.imp_delta, a_max=self.imp_delta)
+        vel_delta = 2.0 * self.imp_delta / self.dt
+        diff_d = np.clip(-curr_vel[:3], a_min=-vel_delta, a_max=vel_delta)
+        force = self.imp_kp * diff_p + self.imp_kd * diff_d
+
+        # Orientation impedance using scipy Rotation (robust to discontinuities)
+        target_quat = target_pose_quat[3:7]  # Extract quaternion (4 values)
+        curr_quat = curr_quat_pose[3:7]      # Extract quaternion (4 values)
+        
+        # Use scipy Rotation for robust orientation error calculation
+        rot_diff = R.from_quat(target_quat) * R.from_quat(curr_quat).inv()
+        rotvec_err = rot_diff.as_rotvec()
+        ang_vel = curr_vel[3:]
+        torque = self.ori_kp * rotvec_err + self.ori_kd * (-ang_vel)
+
+        wrench = np.concatenate([force, torque]).astype(float)
+        
+        t_start = self.robot.initPeriod()
+        ok = self.robot.forceMode(
+            self.fm_task_frame,
+            self.fm_selection_vector,
+            wrench.tolist(),
+            2,
+            self.fm_limits,
+        )
+        if not ok:
+            self.robot.forceModeStop()
+            raise RuntimeError("forceMode failed")
+        if self._use_gripper and target_pose_quat.shape[0] == 8:
+            gripper_pos = target_pose_quat[-1] * 255.0
+            self.gripper.move(gripper_pos, 255, 10)
+        self.robot.waitPeriod(t_start)
+
+    def cleanup(self) -> None:
+        """Clean up robot state when shutting down."""
+        try:
+            print("Cleaning up robot state...")
+            # Stop force mode first
+            self.robot.forceModeStop()
+            
+            # Hold current position briefly to prevent drift
+            current_joints = self.r_inter.getActualQ()
+            self.robot.servoJ(current_joints, 0.5, 0.5, 0.1, 0.1, 300)
+            print("Robot cleanup complete")
+        except Exception as e:
+            print(f"Error during robot cleanup: {e}")
 
 
 def main():

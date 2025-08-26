@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from pathlib import Path
+import time
 
 import tyro
 
@@ -83,6 +84,7 @@ def launch_robot_server(args: Args):
 
             # IP for the bimanual robot setup is hardcoded
             _robot_l = URRobot(robot_ip="192.168.1.6")
+            time.sleep(2)
             _robot_r = URRobot(robot_ip="192.168.1.5")
             robot = BimanualRobot(_robot_l, _robot_r)
         elif args.robot == "yam":

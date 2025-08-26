@@ -79,6 +79,13 @@ class RobotEnv:
         observations["gripper_position"] = robot_obs["gripper_position"]
         return observations
 
+    def cleanup(self) -> None:
+        """Clean up robot state when shutting down."""
+        if hasattr(self._robot, 'cleanup'):
+            self._robot.cleanup()
+        else:
+            print("Robot does not have cleanup method")
+
 
 def main() -> None:
     pass

@@ -49,6 +49,8 @@ def move_to_start_position(
             print(
                 f"joint[{i}]: \t delta: {delta:4.3f} , leader: \t{joint:4.3f} , follower: \t{current_j:4.3f}"
             )
+        if hasattr(env, 'cleanup'):
+            env.cleanup()
         return False
 
     print(f"Start pos: {len(start_pos)}", f"Joints: {len(joints)}")
@@ -166,24 +168,34 @@ def run_control_loop(
     start_time = time.time()
     obs = env.get_obs()
 
-    while True:
-        if print_timing:
-            num = time.time() - start_time
-            message = f"\rTime passed: {round(num, 2)}          "
+    try:
+        while True:
+            if print_timing:
+                num = time.time() - start_time
+                message = f"\rTime passed: {round(num, 2)}          "
 
-            if colors_available:
-                print(
-                    colored(message, color="white", attrs=["bold"]), end="", flush=True
-                )
-            else:
-                print(message, end="", flush=True)
+                if colors_available:
+                    print(
+                        colored(message, color="white", attrs=["bold"]), end="", flush=True
+                    )
+                else:
+                    print(message, end="", flush=True)
 
-        action = agent.act(obs)
+            action = agent.act(obs)
 
-        # Handle save interface
-        if save_interface is not None:
-            result = save_interface.update(obs, action)
-            if result == "quit":
-                break
+            # Handle save interface
+            if save_interface is not None:
+                result = save_interface.update(obs, action)
+                if result == "quit":
+                    break
 
-        obs = env.step(action)
+            obs = env.step(action)
+    
+    except KeyboardInterrupt:
+        print("\nReceived interrupt signal...")
+    except Exception as e:
+        print(f"\nError in control loop: {e}")
+    finally:
+        # Always cleanup robot state when exiting
+        print("Performing robot cleanup...")
+        env.cleanup()

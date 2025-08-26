@@ -119,6 +119,16 @@ class BimanualRobot(Robot):
 
         return return_obs
 
+    def cleanup(self) -> None:
+        """Clean up both left and right robots when shutting down."""
+        try:
+            if hasattr(self._robot_l, 'cleanup'):
+                self._robot_l.cleanup()
+            if hasattr(self._robot_r, 'cleanup'):
+                self._robot_r.cleanup()
+        except Exception as e:
+            print(f"Error during bimanual robot cleanup: {e}")
+
 
 def main():
     pass
